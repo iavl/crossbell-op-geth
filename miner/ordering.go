@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // txWithMinerFee wraps a transaction with its gas price or effective miner gasTipCap
@@ -40,9 +41,15 @@ func newTxWithMinerFee(tx *txpool.LazyTransaction, from common.Address, baseFee 
 	tip := new(big.Int).Set(tx.GasTipCap)
 	if baseFee != nil {
 		if tx.GasFeeCap.Cmp(baseFee) < 0 {
-			return nil, types.ErrGasFeeCapTooLow
+			if tx.GasFeeCap.Sign() == 0 && tx.GasTipCap.Sign() == 0 { // for free gas tx
+				log.Debug("Free gas tx", "txHash", tx.Hash)
+			} else {
+				log.Warn("Fee cap less than base fee", "GasFeeCap", tx.GasFeeCap, "baseFee", baseFee, "txHash", tx.Hash)
+				return nil, types.ErrGasFeeCapTooLow
+			}
+		} else {
+			tip = math.BigMin(tx.GasTipCap, new(big.Int).Sub(tx.GasFeeCap, baseFee))
 		}
-		tip = math.BigMin(tx.GasTipCap, new(big.Int).Sub(tx.GasFeeCap, baseFee))
 	}
 	return &txWithMinerFee{
 		tx:   tx,
