@@ -23,6 +23,8 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/crypto/sha3"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -1389,6 +1391,28 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	return ret
 }
 
+func (s *StateDB) CheckFreeGasTransaction(from common.Address, to common.Address) error {
+	// check whether the `to` is in `freeGasTxContracts` list
+	key := GetContractStorageMappingKey(to, common.Big3) // slot 3 stores the mapping `freeGasTxContracts`
+	val := s.GetState(params.L2FreeGasTxContract, key)
+	if val.Big().Sign() == 0 {
+		return fmt.Errorf("not qualified for free gas tx,%v not in freeGasTxContracts list", to)
+	}
+
+	// get gasTokenPerTx
+	// slot 2 stores the `gasTokenPerTx`
+	gasTokenPerTx := s.GetState(params.L2FreeGasTxContract, common.BigToHash(big.NewInt(2)))
+
+	// check gCSB balance of `from`
+	key = GetContractStorageMappingKey(from, common.Big0) // slot 0 stores the mapping `_balances
+	balance := s.GetState(params.L2GasTokenContract, key)
+	if balance.Big().Cmp(gasTokenPerTx.Big()) < 0 {
+		return fmt.Errorf("not qualified for free gas tx, gCSB balance is insufficient, balance %v, need %v", balance, gasTokenPerTx)
+	}
+	return nil
+
+}
+
 // copySet returns a deep-copied set.
 func copySet[k comparable](set map[k][]byte) map[k][]byte {
 	copied := make(map[k][]byte, len(set))
@@ -1408,4 +1432,13 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 		}
 	}
 	return copied
+}
+
+// GetContractStorageMappingKey returns the mapping key from contract storage
+func GetContractStorageMappingKey(addrKey common.Address, slot *big.Int) common.Hash {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write(common.LeftPadBytes(addrKey.Bytes(), 32))
+	hasher.Write(common.LeftPadBytes(slot.Bytes(), 32))
+	digest := hasher.Sum(nil)
+	return common.BytesToHash(digest)
 }

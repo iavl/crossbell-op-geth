@@ -41,8 +41,8 @@ func newTxWithMinerFee(tx *txpool.LazyTransaction, from common.Address, baseFee 
 	tip := new(big.Int).Set(tx.GasTipCap)
 	if baseFee != nil {
 		if tx.GasFeeCap.Cmp(baseFee) < 0 {
-			if tx.GasFeeCap.Sign() == 0 && tx.GasTipCap.Sign() == 0 { // for free gas tx
-				log.Debug("Free gas tx", "txHash", tx.Hash)
+			if tx.GasFeeCap.Sign() == 0 { // for free gas tx
+				log.Debug("Miner collect free gas tx", "txHash", tx.Hash)
 			} else {
 				log.Warn("Fee cap less than base fee", "GasFeeCap", tx.GasFeeCap, "baseFee", baseFee, "txHash", tx.Hash)
 				return nil, types.ErrGasFeeCapTooLow

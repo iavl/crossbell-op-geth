@@ -1927,9 +1927,8 @@ func (s *TransactionAPI) GetFreeGasTxRequests(ctx context.Context, account commo
 		}]`
 	contractABI, _ := abi.JSON(strings.NewReader(abiJSON))
 	callData, _ := contractABI.Pack("getFreeGasRequests", account, targetContract)
-	freeGasTxContract := common.HexToAddress("0x4200000000000000000000000000000000000300")
 	args := TransactionArgs{
-		To:   &freeGasTxContract,
+		To:   &params.L2FreeGasTxContract,
 		Data: (*hexutil.Bytes)(&callData),
 	}
 	// do call
