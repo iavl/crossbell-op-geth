@@ -384,12 +384,8 @@ func (l *list) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions, 
 			return true
 		}
 
-		if tx.GasFeeCap().Sign() == 0 {
-			// do not filter free gas transaction
-			return false
-		}
-
-		return tx.Cost().Cmp(costLimit) > 0
+		// do not filter free gas transaction
+		return tx.Cost().Cmp(costLimit) > 0 && tx.GasFeeCap().Sign() != 0
 	})
 
 	if len(removed) == 0 {

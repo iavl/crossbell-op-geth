@@ -29,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+var transferLogSig = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
 type ExecutionResult struct {
@@ -276,6 +278,29 @@ func (st *StateTransition) buyGas() error {
 	}
 	if have, want := st.state.GetBalance(st.msg.From), balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From.Hex(), have, want)
+	}
+	// update gCSB balance for free gas transaction
+	if st.msg.GasFeeCap.Sign() == 0 && !st.msg.SkipAccountChecks {
+		have := st.state.GetGasTokenBalance(st.msg.From)
+		want := st.state.GetGasTokenPerTx()
+		if have.Cmp(want) < 0 {
+			return fmt.Errorf("gCSB balance is insufficient，address %v have %v want %v", st.msg.From.Hex(), have, want)
+		}
+
+		// sub gCSB from msg.From
+		st.state.SubGasTokenBalance(st.msg.From, want)
+		// add gCSB to baseFeeRecipient
+		st.state.AddGasTokenBalance(params.OptimismBaseFeeRecipient, want)
+		// emit TransferLog
+		st.state.AddLog(&types.Log{Address: params.L2GasTokenContract,
+			Topics: []common.Hash{
+				transferLogSig,
+				common.BytesToHash(st.msg.From.Bytes()),
+				common.BytesToHash(params.OptimismBaseFeeRecipient.Bytes()),
+			},
+			Data:        want.Bytes(),
+			BlockNumber: st.evm.Context.BlockNumber.Uint64()})
+
 	}
 	if err := st.gp.SubGas(st.msg.GasLimit); err != nil {
 		return err

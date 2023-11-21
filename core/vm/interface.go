@@ -78,6 +78,12 @@ type StateDB interface {
 
 	AddLog(*types.Log)
 	AddPreimage(common.Hash, []byte)
+
+	GetGasTokenBalance(addr common.Address) *big.Int
+	GetGasTokenPerTx() *big.Int
+	GetFreeGasTxGasLimit() *big.Int
+	AddGasTokenBalance(addr common.Address, amount *big.Int)
+	SubGasTokenBalance(addr common.Address, amount *big.Int)
 }
 
 // CallContext provides a basic interface for the EVM calling conventions. The EVM

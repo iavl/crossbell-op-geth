@@ -1391,7 +1391,39 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	return ret
 }
 
-func (s *StateDB) CheckFreeGasTransaction(from common.Address, to common.Address) error {
+func (s *StateDB) GetGasTokenBalance(addr common.Address) *big.Int {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	balance := s.GetState(params.L2GasTokenContract, key)
+	return balance.Big()
+}
+
+func (s *StateDB) AddGasTokenBalance(addr common.Address, amount *big.Int) {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	bal := s.GetGasTokenBalance(addr)
+	bal = bal.Add(bal, amount)
+	s.SetState(params.L2GasTokenContract, key, common.BigToHash(bal))
+}
+
+func (s *StateDB) SubGasTokenBalance(addr common.Address, amount *big.Int) {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	bal := s.GetGasTokenBalance(addr)
+	bal = bal.Sub(bal, amount)
+	s.SetState(params.L2GasTokenContract, key, common.BigToHash(bal))
+}
+
+func (s *StateDB) GetGasTokenPerTx() *big.Int {
+	// slot 2 stores the `gasTokenPerTx`
+	gasTokenPerTx := s.GetState(params.L2FreeGasTxContract, common.BigToHash(common.Big2))
+	return gasTokenPerTx.Big()
+}
+
+func (s *StateDB) GetFreeGasTxGasLimit() *big.Int {
+	// slot 1 stores the `freeGasTxGasLimit`
+	freeGasTxGasLimit := s.GetState(params.L2FreeGasTxContract, common.BigToHash(common.Big1))
+	return freeGasTxGasLimit.Big()
+}
+
+func (s *StateDB) CheckFreeGasTransaction(from common.Address, to common.Address, gasLimit uint64) error {
 	// check whether the `to` is in `freeGasTxContracts` list
 	key := GetContractStorageMappingKey(to, common.Big3) // slot 3 stores the mapping `freeGasTxContracts`
 	val := s.GetState(params.L2FreeGasTxContract, key)
@@ -1399,15 +1431,17 @@ func (s *StateDB) CheckFreeGasTransaction(from common.Address, to common.Address
 		return fmt.Errorf("not qualified for free gas tx,%v not in freeGasTxContracts list", to)
 	}
 
-	// get gasTokenPerTx
-	// slot 2 stores the `gasTokenPerTx`
-	gasTokenPerTx := s.GetState(params.L2FreeGasTxContract, common.BigToHash(big.NewInt(2)))
-
 	// check gCSB balance of `from`
-	key = GetContractStorageMappingKey(from, common.Big0) // slot 0 stores the mapping `_balances
-	balance := s.GetState(params.L2GasTokenContract, key)
-	if balance.Big().Cmp(gasTokenPerTx.Big()) < 0 {
-		return fmt.Errorf("not qualified for free gas tx, gCSB balance is insufficient, balance %v, need %v", balance, gasTokenPerTx)
+	balance := s.GetGasTokenBalance(from)
+	gasTokenPerTx := s.GetGasTokenPerTx()
+	if balance.Cmp(gasTokenPerTx) < 0 {
+		return fmt.Errorf("not qualified for free gas tx, address %v gCSB balance is insufficient, balance %v, need %v", from, balance, gasTokenPerTx)
+	}
+
+	// check gasLimit
+	freeGasTxGasLimit := s.GetFreeGasTxGasLimit()
+	if gasLimit > freeGasTxGasLimit.Uint64() {
+		return fmt.Errorf("not qualified for free gas tx, gasLimit %v exceeds %v", gasLimit, freeGasTxGasLimit)
 	}
 	return nil
 

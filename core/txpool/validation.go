@@ -243,7 +243,7 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 	if tx.GasFeeCap().Sign() == 0 {
 		// Ensure the transaction qualifies for free gas tx
 		to := tx.To()
-		if err = opts.State.CheckFreeGasTransaction(from, *to); err != nil {
+		if err = opts.State.CheckFreeGasTransaction(from, *to, tx.Gas()); err != nil {
 			return err
 		}
 		log.Debug("Accepted a free gas transaction", "from", from, "to", to, "txHash", tx.Hash())
