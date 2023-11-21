@@ -281,16 +281,16 @@ func (st *StateTransition) buyGas() error {
 	}
 	// update gCSB balance for free gas transaction
 	if st.msg.GasFeeCap.Sign() == 0 && !st.msg.SkipAccountChecks {
-		have := st.state.GetGasTokenBalance(st.msg.From)
-		want := st.state.GetGasTokenPerTx()
-		if have.Cmp(want) < 0 {
-			return fmt.Errorf("gCSB balance is insufficient，address %v have %v want %v", st.msg.From.Hex(), have, want)
+		balance := st.state.GetGasTokenBalance(st.msg.From)
+		gasFee := st.state.GetGasTokenPerTx()
+		if balance.Cmp(gasFee) < 0 {
+			return fmt.Errorf("gCSB balance is insufficient，address %v balance %v need %v", st.msg.From.Hex(), balance, gasFee)
 		}
 
 		// sub gCSB from msg.From
-		st.state.SubGasTokenBalance(st.msg.From, want)
+		st.state.SubGasTokenBalance(st.msg.From, gasFee)
 		// add gCSB to baseFeeRecipient
-		st.state.AddGasTokenBalance(params.OptimismBaseFeeRecipient, want)
+		st.state.AddGasTokenBalance(params.OptimismBaseFeeRecipient, gasFee)
 		// emit TransferLog
 		st.state.AddLog(&types.Log{Address: params.L2GasTokenContract,
 			Topics: []common.Hash{
@@ -298,7 +298,7 @@ func (st *StateTransition) buyGas() error {
 				common.BytesToHash(st.msg.From.Bytes()),
 				common.BytesToHash(params.OptimismBaseFeeRecipient.Bytes()),
 			},
-			Data:        want.Bytes(),
+			Data:        gasFee.Bytes(),
 			BlockNumber: st.evm.Context.BlockNumber.Uint64()})
 
 	}
