@@ -18,6 +18,7 @@ package miner
 
 import (
 	"container/heap"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -42,7 +43,7 @@ func newTxWithMinerFee(tx *txpool.LazyTransaction, from common.Address, baseFee 
 	if baseFee != nil {
 		if tx.GasFeeCap.Cmp(baseFee) < 0 {
 			if tx.GasFeeCap.Sign() == 0 { // for free gas tx
-				log.Debug("Miner collect free gas tx", "txHash", tx.Hash)
+				log.Debug("Miner collect free gas tx", "txHash", tx.Hash, "from", from, "to", tx.Tx.To(), "gasLimit", tx.Tx.Gas(), "data", fmt.Sprintf("%x", tx.Tx.Data()))
 			} else {
 				log.Warn("Fee cap less than base fee", "GasFeeCap", tx.GasFeeCap, "baseFee", baseFee, "txHash", tx.Hash)
 				return nil, types.ErrGasFeeCapTooLow
