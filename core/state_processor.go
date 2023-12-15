@@ -17,6 +17,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -70,32 +71,49 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
 	}
-	blockContext := NewEVMBlockContext(header, p.bc, nil)
-	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
+	misc.EnsureCreate2Deployer(p.config, block.Time(), statedb)
+	var (
+		context = NewEVMBlockContext(header, p.bc, nil, p.config, statedb)
+		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
+		signer  = types.MakeSigner(p.config, header.Number, header.Time)
+	)
+	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
+		ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
+	}
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
-		msg, err := tx.AsMessage(types.MakeSigner(p.config, header.Number), header.BaseFee)
+		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		statedb.Prepare(tx.Hash(), i)
-		receipt, err := applyTransaction(msg, p.config, nil, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
+		statedb.SetTxContext(tx.Hash(), i)
+		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}
+	// Fail if Shanghai not enabled and len(withdrawals) is non-zero.
+	withdrawals := block.Withdrawals()
+	if len(withdrawals) > 0 && !p.config.IsShanghai(block.Number(), block.Time()) {
+		return nil, nil, 0, errors.New("withdrawals before shanghai")
+	}
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
-	p.engine.Finalize(p.bc, header, statedb, block.Transactions(), block.Uncles())
+	p.engine.Finalize(p.bc, header, statedb, block.Transactions(), block.Uncles(), withdrawals)
 
 	return receipts, allLogs, *usedGas, nil
 }
 
-func applyTransaction(msg types.Message, config *params.ChainConfig, author *common.Address, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
+
+	nonce := tx.Nonce()
+	if msg.IsDepositTx && config.IsOptimismRegolith(evm.Context.Time) {
+		nonce = statedb.GetNonce(msg.From)
+	}
 
 	// Apply the transaction to the current state (included in the env).
 	result, err := ApplyMessage(evm, msg, gp)
@@ -123,13 +141,29 @@ func applyTransaction(msg types.Message, config *params.ChainConfig, author *com
 	receipt.TxHash = tx.Hash()
 	receipt.GasUsed = result.UsedGas
 
+	if msg.IsDepositTx && config.IsOptimismRegolith(evm.Context.Time) {
+		// The actual nonce for deposit transactions is only recorded from Regolith onwards and
+		// otherwise must be nil.
+		receipt.DepositNonce = &nonce
+		// The DepositReceiptVersion for deposit transactions is only recorded from Canyon onwards
+		// and otherwise must be nil.
+		if config.IsOptimismCanyon(evm.Context.Time) {
+			receipt.DepositReceiptVersion = new(uint64)
+			*receipt.DepositReceiptVersion = types.CanyonDepositReceiptVersion
+		}
+	}
+	if tx.Type() == types.BlobTxType {
+		receipt.BlobGasUsed = uint64(len(tx.BlobHashes()) * params.BlobTxBlobGasPerBlob)
+		receipt.BlobGasPrice = evm.Context.BlobBaseFee
+	}
+
 	// If the transaction created a contract, store the creation address in the receipt.
-	if msg.To() == nil {
-		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
+	if msg.To == nil {
+		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, nonce)
 	}
 
 	// Set the receipt logs and create the bloom filter.
-	receipt.Logs = statedb.GetLogs(tx.Hash(), blockHash)
+	receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 	receipt.BlockHash = blockHash
 	receipt.BlockNumber = blockNumber
@@ -142,12 +176,32 @@ func applyTransaction(msg types.Message, config *params.ChainConfig, author *com
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error) {
-	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number), header.BaseFee)
+	msg, err := TransactionToMessage(tx, types.MakeSigner(config, header.Number, header.Time), header.BaseFee)
 	if err != nil {
 		return nil, err
 	}
 	// Create a new context to be used in the EVM environment
-	blockContext := NewEVMBlockContext(header, bc, author)
-	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, config, cfg)
-	return applyTransaction(msg, config, author, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+	blockContext := NewEVMBlockContext(header, bc, author, config, statedb)
+	vmenv := vm.NewEVM(blockContext, vm.TxContext{BlobHashes: tx.BlobHashes()}, statedb, config, cfg)
+	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+}
+
+// ProcessBeaconBlockRoot applies the EIP-4788 system call to the beacon block root
+// contract. This method is exported to be used in tests.
+func ProcessBeaconBlockRoot(beaconRoot common.Hash, vmenv *vm.EVM, statedb *state.StateDB) {
+	// If EIP-4788 is enabled, we need to invoke the beaconroot storage contract with
+	// the new root
+	msg := &Message{
+		From:      params.SystemAddress,
+		GasLimit:  30_000_000,
+		GasPrice:  common.Big0,
+		GasFeeCap: common.Big0,
+		GasTipCap: common.Big0,
+		To:        &params.BeaconRootsStorageAddress,
+		Data:      beaconRoot[:],
+	}
+	vmenv.Reset(NewEVMTxContext(msg), statedb)
+	statedb.AddAddressToAccessList(params.BeaconRootsStorageAddress)
+	_, _, _ = vmenv.Call(vm.AccountRef(msg.From), *msg.To, msg.Data, 30_000_000, common.Big0)
+	statedb.Finalise(true)
 }

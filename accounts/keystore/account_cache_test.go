@@ -17,12 +17,12 @@
 package keystore
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
 
@@ -30,6 +30,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
+	"golang.org/x/exp/slices"
 )
 
 var (
@@ -74,7 +75,7 @@ func waitForAccounts(wantAccounts []accounts.Account, ks *KeyStore) error {
 			select {
 			case <-ks.changes:
 			default:
-				return fmt.Errorf("wasn't notified of new accounts")
+				return errors.New("wasn't notified of new accounts")
 			}
 			return nil
 		}
@@ -113,7 +114,6 @@ func TestWatchNewFile(t *testing.T) {
 func TestWatchNoDir(t *testing.T) {
 	t.Parallel()
 	// Create ks but not the directory that it watches.
-	rand.Seed(time.Now().UnixNano())
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("eth-keystore-watchnodir-test-%d-%d", os.Getpid(), rand.Int()))
 	ks := NewKeyStore(dir, LightScryptN, LightScryptP)
 	list := ks.Accounts()
@@ -203,7 +203,7 @@ func TestCacheAddDeleteOrder(t *testing.T) {
 	// Check that the account list is sorted by filename.
 	wantAccounts := make([]accounts.Account, len(accs))
 	copy(wantAccounts, accs)
-	sort.Sort(accountsByURL(wantAccounts))
+	slices.SortFunc(wantAccounts, byURL)
 	list := cache.accounts()
 	if !reflect.DeepEqual(list, wantAccounts) {
 		t.Fatalf("got accounts: %s\nwant %s", spew.Sdump(accs), spew.Sdump(wantAccounts))
@@ -322,7 +322,6 @@ func TestUpdatedKeyfileContents(t *testing.T) {
 	t.Parallel()
 
 	// Create a temporary keystore to test with
-	rand.Seed(time.Now().UnixNano())
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("eth-keystore-updatedkeyfilecontents-test-%d-%d", os.Getpid(), rand.Int()))
 	ks := NewKeyStore(dir, LightScryptN, LightScryptP)
 
