@@ -1902,6 +1902,47 @@ func (s *TransactionAPI) GetRawTransactionByBlockHashAndIndex(ctx context.Contex
 	return nil
 }
 
+func (s *TransactionAPI) GetFreeGasTxRequests(ctx context.Context, account common.Address, targetContract common.Address) (hexutil.Bytes, error) {
+	abiJSON := `
+		[{
+			"inputs": [{
+					"internalType": "address",
+					"name": "account",
+					"type": "address"
+				},
+				{
+					"internalType": "address",
+					"name": "targetContract",
+					"type": "address"
+				}
+			],
+			"name": "getFreeGasRequests",
+			"outputs": [{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}],
+			"stateMutability": "view",
+			"type": "function"
+		}]`
+	contractABI, _ := abi.JSON(strings.NewReader(abiJSON))
+	callData, _ := contractABI.Pack("getFreeGasRequests", account, targetContract)
+	args := TransactionArgs{
+		To:   &params.L2FreeGasTxContract,
+		Data: (*hexutil.Bytes)(&callData),
+	}
+	// do call
+	result, err := DoCall(ctx, s.b, args, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber), nil, nil, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
+	if err != nil {
+		return nil, err
+	}
+	// If the result contains a revert reason, try to unpack and return it.
+	if len(result.Revert()) > 0 {
+		return nil, newRevertError(result)
+	}
+	return result.Return(), result.Err
+}
+
 // GetTransactionCount returns the number of transactions the given address has sent for the given block number
 func (s *TransactionAPI) GetTransactionCount(ctx context.Context, address common.Address, blockNrOrHash rpc.BlockNumberOrHash) (*hexutil.Uint64, error) {
 	// Ask transaction pool for the nonce which includes pending transactions

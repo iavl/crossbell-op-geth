@@ -29,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+var transferLogSig = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+
 // ExecutionResult includes all output after executing given evm
 // message no matter the execution itself is successful or not.
 type ExecutionResult struct {
@@ -245,7 +247,10 @@ func (st *StateTransition) buyGas() error {
 	mgval = mgval.Mul(mgval, st.msg.GasPrice)
 	var l1Cost *big.Int
 	if st.evm.Context.L1CostFunc != nil && !st.msg.SkipAccountChecks {
-		l1Cost = st.evm.Context.L1CostFunc(st.evm.Context.BlockNumber.Uint64(), st.evm.Context.Time, st.msg.RollupDataGas, st.msg.IsDepositTx)
+		// do not charge l1Cost for free gas transaction
+		if !(st.msg.GasFeeCap.Sign() == 0) {
+			l1Cost = st.evm.Context.L1CostFunc(st.evm.Context.BlockNumber.Uint64(), st.evm.Context.Time, st.msg.RollupDataGas, st.msg.IsDepositTx)
+		}
 	}
 	if l1Cost != nil {
 		mgval = mgval.Add(mgval, l1Cost)
@@ -273,6 +278,29 @@ func (st *StateTransition) buyGas() error {
 	}
 	if have, want := st.state.GetBalance(st.msg.From), balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From.Hex(), have, want)
+	}
+	// update gCSB balance for free gas transaction
+	if st.msg.GasFeeCap.Sign() == 0 && !st.msg.SkipAccountChecks {
+		balance := st.state.GetGasTokenBalance(st.msg.From)
+		fee := st.state.GetGasTokenPerTx()
+		if balance.Cmp(fee) < 0 {
+			return fmt.Errorf("gCSB balance is insufficient，address %v balance %v need %v", st.msg.From.Hex(), balance, fee)
+		}
+
+		// sub gCSB from msg.From
+		st.state.SubGasTokenBalance(st.msg.From, fee)
+		// add gCSB to baseFeeRecipient
+		st.state.AddGasTokenBalance(st.evm.Context.Coinbase, fee)
+		// emit TransferLog
+		st.state.AddLog(&types.Log{Address: params.L2GasTokenContract,
+			Topics: []common.Hash{
+				transferLogSig,
+				common.BytesToHash(st.msg.From.Bytes()),
+				common.BytesToHash(st.evm.Context.Coinbase.Bytes()),
+			},
+			Data:        fee.Bytes(),
+			BlockNumber: st.evm.Context.BlockNumber.Uint64()})
+
 	}
 	if err := st.gp.SubGas(st.msg.GasLimit); err != nil {
 		return err
@@ -341,7 +369,7 @@ func (st *StateTransition) preCheck() error {
 			}
 			// This will panic if baseFee is nil, but basefee presence is verified
 			// as part of header validation.
-			if msg.GasFeeCap.Cmp(st.evm.Context.BaseFee) < 0 {
+			if msg.GasFeeCap.BitLen() > 0 && msg.GasFeeCap.Cmp(st.evm.Context.BaseFee) < 0 {
 				return fmt.Errorf("%w: address %v, maxFeePerGas: %s baseFee: %s", ErrFeeCapTooLow,
 					msg.From.Hex(), msg.GasFeeCap, st.evm.Context.BaseFee)
 			}
@@ -519,7 +547,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		effectiveTip = cmath.BigMin(msg.GasTipCap, new(big.Int).Sub(msg.GasFeeCap, st.evm.Context.BaseFee))
 	}
 
-	if st.evm.Config.NoBaseFee && msg.GasFeeCap.Sign() == 0 && msg.GasTipCap.Sign() == 0 {
+	if msg.GasFeeCap.Sign() == 0 && msg.GasTipCap.Sign() == 0 {
 		// Skip fee payment when NoBaseFee is set and the fee fields
 		// are 0. This avoids a negative effectiveTip being applied to
 		// the coinbase when simulating calls.
@@ -532,9 +560,13 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 	// Check that we are post bedrock to enable op-geth to be able to create pseudo pre-bedrock blocks (these are pre-bedrock, but don't follow l2 geth rules)
 	// Note optimismConfig will not be nil if rules.IsOptimismBedrock is true
 	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && rules.IsOptimismBedrock {
-		st.state.AddBalance(params.OptimismBaseFeeRecipient, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee))
-		if cost := st.evm.Context.L1CostFunc(st.evm.Context.BlockNumber.Uint64(), st.evm.Context.Time, st.msg.RollupDataGas, st.msg.IsDepositTx); cost != nil {
-			st.state.AddBalance(params.OptimismL1FeeRecipient, cost)
+		if msg.GasFeeCap.Sign() == 0 {
+			// Skip fee payment for free gas transaction
+		} else {
+			st.state.AddBalance(params.OptimismBaseFeeRecipient, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee))
+			if cost := st.evm.Context.L1CostFunc(st.evm.Context.BlockNumber.Uint64(), st.evm.Context.Time, st.msg.RollupDataGas, st.msg.IsDepositTx); cost != nil {
+				st.state.AddBalance(params.OptimismL1FeeRecipient, cost)
+			}
 		}
 	}
 

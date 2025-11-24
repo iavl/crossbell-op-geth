@@ -319,6 +319,69 @@ func testSetNonce(pool *LegacyPool, addr common.Address, nonce uint64) {
 	pool.mu.Unlock()
 }
 
+func TestFreeGasTransactionLegacy(t *testing.T) {
+	t.Parallel()
+
+	pool, key := setupPool()
+	defer pool.Close()
+
+	// legacy tx
+	tx := pricedTransaction(0, 100000, big.NewInt(0), key)
+	from, _ := deriveSender(tx)
+	testAddBalance(pool, from, big.NewInt(0xffffffffffffff))
+	if err := pool.addRemote(tx); err != nil {
+		t.Errorf("%v", err)
+	}
+	if len(pool.pending) > 0 {
+		t.Error("expected transaction pending to be empty. is", len(pool.pending))
+	}
+	if len(pool.queue) != 1 {
+		t.Error("expected valid txs to be 1 is", len(pool.pending))
+	}
+
+	// requests transaction promotion
+	<-pool.requestPromoteExecutables(newAccountSet(pool.signer, from))
+
+	if _, ok := pool.pending[from].txs.items[tx.Nonce()]; !ok {
+		t.Error("expected transaction to be in tx pool")
+	}
+	if len(pool.queue) > 0 {
+		t.Error("expected transaction queue to be empty. is", len(pool.queue))
+	}
+}
+
+func TestFreeGasTransactionDynamicFee(t *testing.T) {
+	t.Parallel()
+
+	pool, key := setupPool()
+	defer pool.Close()
+
+	// dynamicFee tx
+	tx := dynamicFeeTx(0, 21000, big.NewInt(0), big.NewInt(0), key)
+	from, _ := types.Sender(types.NewLondonSigner(params.TestChainConfig.ChainID), tx)
+
+	testAddBalance(pool, from, big.NewInt(0xffffffffffffff))
+	if err := pool.addRemote(tx); err != nil {
+		t.Errorf("%v", err)
+	}
+	if len(pool.pending) > 0 {
+		t.Error("expected transaction pending to be empty. is", len(pool.pending))
+	}
+	if len(pool.queue) != 1 {
+		t.Error("expected valid txs to be 1 is", len(pool.pending))
+	}
+
+	// requests transaction promotion
+	<-pool.requestPromoteExecutables(newAccountSet(pool.signer, from))
+
+	if _, ok := pool.pending[from].txs.items[tx.Nonce()]; !ok {
+		t.Error("expected transaction to be in tx pool")
+	}
+	if len(pool.queue) > 0 {
+		t.Error("expected transaction queue to be empty. is", len(pool.queue))
+	}
+}
+
 func TestInvalidTransactions(t *testing.T) {
 	t.Parallel()
 

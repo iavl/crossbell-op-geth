@@ -27,6 +27,11 @@ var (
 	OptimismBaseFeeRecipient = common.HexToAddress("0x4200000000000000000000000000000000000019")
 	// The L1 portion of the transaction fee accumulates at this predeploy
 	OptimismL1FeeRecipient = common.HexToAddress("0x420000000000000000000000000000000000001A")
+
+	// The L2 free gas tx contract
+	L2FreeGasTxContract = common.HexToAddress("0x4200000000000000000000000000000000000300")
+	// The L2 gas token contract
+	L2GasTokenContract = common.HexToAddress("0x4200000000000000000000000000000000000301")
 )
 
 const (

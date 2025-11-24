@@ -23,6 +23,8 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/crypto/sha3"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -1389,6 +1391,62 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	return ret
 }
 
+func (s *StateDB) GetGasTokenBalance(addr common.Address) *big.Int {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	balance := s.GetState(params.L2GasTokenContract, key)
+	return balance.Big()
+}
+
+func (s *StateDB) AddGasTokenBalance(addr common.Address, amount *big.Int) {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	bal := s.GetGasTokenBalance(addr)
+	bal = bal.Add(bal, amount)
+	s.SetState(params.L2GasTokenContract, key, common.BigToHash(bal))
+}
+
+func (s *StateDB) SubGasTokenBalance(addr common.Address, amount *big.Int) {
+	key := GetContractStorageMappingKey(addr, common.Big0) // slot 0 stores the mapping `_balances
+	bal := s.GetGasTokenBalance(addr)
+	bal = bal.Sub(bal, amount)
+	s.SetState(params.L2GasTokenContract, key, common.BigToHash(bal))
+}
+
+func (s *StateDB) GetGasTokenPerTx() *big.Int {
+	// slot 2 stores the `gasTokenPerTx`
+	gasTokenPerTx := s.GetState(params.L2FreeGasTxContract, common.BigToHash(common.Big2))
+	return gasTokenPerTx.Big()
+}
+
+func (s *StateDB) GetFreeGasTxGasLimit() *big.Int {
+	// slot 1 stores the `freeGasTxGasLimit`
+	freeGasTxGasLimit := s.GetState(params.L2FreeGasTxContract, common.BigToHash(common.Big1))
+	return freeGasTxGasLimit.Big()
+}
+
+func (s *StateDB) CheckFreeGasTransaction(from common.Address, to common.Address, gasLimit uint64) error {
+	// check whether the `to` is in `freeGasTxContracts` list
+	key := GetContractStorageMappingKey(to, common.Big3) // slot 3 stores the mapping `freeGasTxContracts`
+	val := s.GetState(params.L2FreeGasTxContract, key)
+	if val.Big().Sign() == 0 {
+		return fmt.Errorf("not qualified for free gas tx,%v not in freeGasTxContracts list", to)
+	}
+
+	// check gCSB balance of `from`
+	balance := s.GetGasTokenBalance(from)
+	gasTokenPerTx := s.GetGasTokenPerTx()
+	if balance.Cmp(gasTokenPerTx) < 0 {
+		return fmt.Errorf("not qualified for free gas tx, address %v gCSB balance is insufficient, balance %v, need %v", from, balance, gasTokenPerTx)
+	}
+
+	// check gasLimit
+	freeGasTxGasLimit := s.GetFreeGasTxGasLimit()
+	if gasLimit > freeGasTxGasLimit.Uint64() {
+		return fmt.Errorf("not qualified for free gas tx, gasLimit %v exceeds %v", gasLimit, freeGasTxGasLimit)
+	}
+	return nil
+
+}
+
 // copySet returns a deep-copied set.
 func copySet[k comparable](set map[k][]byte) map[k][]byte {
 	copied := make(map[k][]byte, len(set))
@@ -1408,4 +1466,13 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 		}
 	}
 	return copied
+}
+
+// GetContractStorageMappingKey returns the mapping key from contract storage
+func GetContractStorageMappingKey(addrKey common.Address, slot *big.Int) common.Hash {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write(common.LeftPadBytes(addrKey.Bytes(), 32))
+	hasher.Write(common.LeftPadBytes(slot.Bytes(), 32))
+	digest := hasher.Sum(nil)
+	return common.BytesToHash(digest)
 }

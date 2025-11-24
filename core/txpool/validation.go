@@ -239,38 +239,48 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 			return fmt.Errorf("%w: tx nonce %v, gapped nonce %v", core.ErrNonceTooHigh, tx.Nonce(), gap)
 		}
 	}
-	// Ensure the transactor has enough funds to cover the transaction costs
-	var (
-		balance = opts.State.GetBalance(from)
-		cost    = tx.Cost()
-	)
-	if opts.L1CostFn != nil {
-		if l1Cost := opts.L1CostFn(tx.RollupDataGas()); l1Cost != nil { // add rollup cost
-			cost = cost.Add(cost, l1Cost)
+
+	if tx.GasFeeCap().Sign() == 0 {
+		// Ensure the transaction qualifies for free gas tx
+		to := tx.To()
+		if err = opts.State.CheckFreeGasTransaction(from, *to, tx.Gas()); err != nil {
+			return err
 		}
-	}
-	if balance.Cmp(cost) < 0 {
-		return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
-	}
-	// Ensure the transactor has enough funds to cover for replacements or nonce
-	// expansions without overdrafts
-	spent := opts.ExistingExpenditure(from)
-	if prev := opts.ExistingCost(from, tx.Nonce()); prev != nil {
-		bump := new(big.Int).Sub(cost, prev)
-		need := new(big.Int).Add(spent, bump)
-		if balance.Cmp(need) < 0 {
-			return fmt.Errorf("%w: balance %v, queued cost %v, tx bumped %v, overshot %v", core.ErrInsufficientFunds, balance, spent, bump, new(big.Int).Sub(need, balance))
-		}
+		log.Debug("Accepted a free gas transaction", "from", from, "to", to, "txHash", tx.Hash())
 	} else {
-		need := new(big.Int).Add(spent, cost)
-		if balance.Cmp(need) < 0 {
-			return fmt.Errorf("%w: balance %v, queued cost %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, spent, cost, new(big.Int).Sub(need, balance))
+		// Ensure the transactor has enough funds to cover the transaction costs
+		var (
+			balance = opts.State.GetBalance(from)
+			cost    = tx.Cost()
+		)
+		if opts.L1CostFn != nil {
+			if l1Cost := opts.L1CostFn(tx.RollupDataGas()); l1Cost != nil { // add rollup cost
+				cost = cost.Add(cost, l1Cost)
+			}
 		}
-		// Transaction takes a new nonce value out of the pool. Ensure it doesn't
-		// overflow the number of permitted transactions from a single account
-		// (i.e. max cancellable via out-of-bound transaction).
-		if used, left := opts.UsedAndLeftSlots(from); left <= 0 {
-			return fmt.Errorf("%w: pooled %d txs", ErrAccountLimitExceeded, used)
+		if balance.Cmp(cost) < 0 {
+			return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
+		}
+		// Ensure the transactor has enough funds to cover for replacements or nonce
+		// expansions without overdrafts
+		spent := opts.ExistingExpenditure(from)
+		if prev := opts.ExistingCost(from, tx.Nonce()); prev != nil {
+			bump := new(big.Int).Sub(cost, prev)
+			need := new(big.Int).Add(spent, bump)
+			if balance.Cmp(need) < 0 {
+				return fmt.Errorf("%w: balance %v, queued cost %v, tx bumped %v, overshot %v", core.ErrInsufficientFunds, balance, spent, bump, new(big.Int).Sub(need, balance))
+			}
+		} else {
+			need := new(big.Int).Add(spent, cost)
+			if balance.Cmp(need) < 0 {
+				return fmt.Errorf("%w: balance %v, queued cost %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, spent, cost, new(big.Int).Sub(need, balance))
+			}
+			// Transaction takes a new nonce value out of the pool. Ensure it doesn't
+			// overflow the number of permitted transactions from a single account
+			// (i.e. max cancellable via out-of-bound transaction).
+			if used, left := opts.UsedAndLeftSlots(from); left <= 0 {
+				return fmt.Errorf("%w: pooled %d txs", ErrAccountLimitExceeded, used)
+			}
 		}
 	}
 	return nil
